@@ -1,0 +1,2 @@
+GH_TOKEN=<Your Github Token>
+REPOSITORIES=<List of compa separated repositories to watch>

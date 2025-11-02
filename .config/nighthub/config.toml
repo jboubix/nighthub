@@ -1,0 +1,45 @@
+# GitHub token (can also be set via GITHUB_MONITOR_TOKEN env var)
+github_token = \"ghp_your_token_here\"
+
+# Repositories to monitor
+[[repositories]]
+owner = \"rust-lang\"
+name = \"rust\"
+branch = \"master\"
+
+[[repositories]]
+owner = \"microsoft\"
+name = \"vscode\"
+branch = \"main\"
+
+[[repositories]]
+owner = \"torvalds\"
+name = \"linux\"
+
+# Monitoring settings
+[monitoring]
+refresh_interval_seconds = 60
+max_concurrent_requests = 5
+max_retries = 3
+workflow_runs_per_repo = 4
+
+# UI settings
+[ui.theme]
+success_color = \"green\"
+error_color = \"red\"
+warning_color = \"yellow\"
+
+[ui.layout]
+min_terminal_width = 80
+min_terminal_height = 24
+compact_mode = true
+
+[ui.icons]
+success_icon = \"✓\"
+error_icon = \"✗\"
+running_icon = \"⟳\"
+queued_icon = \"⏸\"
+
+# Logging settings
+[logging]
+level = \"info\"

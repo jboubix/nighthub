@@ -1,0 +1,18 @@
+# Clippy configuration for Nighthub
+
+# Avoid hard-coded paths
+avoid-breaking-exported-api = false
+
+# Avoid large enums
+cognitive-complexity-threshold = 25
+
+# Misc
+disallowed-macros = []
+disallowed-names = []
+disallowed-types = []
+
+# Lint levels (none, allow, warn, deny)
+# Allow these lints for now
+#[lints]
+#clippy::option_map_unit_fn = "allow"
+#clippy::redundant_pub_crate = "allow"

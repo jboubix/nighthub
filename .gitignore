@@ -1,2 +1,21 @@
-.env
-.env.local
+.env*
+.idea/
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+
+# Rust
+target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+*.log
+Cargo.lock
+
+# Added by cargo
+
+/target

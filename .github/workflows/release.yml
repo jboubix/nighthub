@@ -3,42 +3,42 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v4
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-    - name: Build
-      run: cargo build --release
-    - name: Package
-      run: |
-        mkdir dist
-        cp target/release/nighthub dist/
-        tar -czf nighthub-${{ runner.os }}.tar.gz -C dist .
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: nighthub-${{ runner.os }}
-        path: nighthub-${{ runner.os }}.tar.gz
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: |
+          mkdir dist
+          cp target/release/nighthub dist/
+          tar -czf nighthub-${{ runner.os }}.tar.gz -C dist .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nighthub-${{ runner.os }}
+          path: nighthub-${{ runner.os }}.tar.gz
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-    - name: Create release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: artifacts/**/nighthub-*.tar.gz
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/nighthub-*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

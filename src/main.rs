@@ -66,6 +66,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             app_state.handle_ui_event(ui_event);
         }
 
+        // Auto refresh when timer reaches 0
+        if app_state.seconds_until_refresh() == 0 {
+            if let Err(e) = app_state.refresh().await {
+                eprintln!("Auto refresh error: {}", e);
+            }
+        }
+
         terminal.draw(|f| {
             // Create a list of repository names for UI component
             let repo_names: Vec<String> = app_state.repositories.iter().map(|r| r.full_name.clone()).collect();

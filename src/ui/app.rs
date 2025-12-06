@@ -262,8 +262,8 @@ impl AppState {
             UiEvent::WorkflowRunsUpdated(repo_name, runs) => {
                 self.workflow_runs.insert(repo_name.clone(), runs);
                 self.last_repo_refresh_times.insert(repo_name.clone(), Utc::now());
-                // Update timer with calculated refresh interval
-                self.seconds_until_refresh = self.seconds_until_refresh();
+                // Reset timer after successful refresh - this will be calculated dynamically in seconds_until_refresh()
+                self.seconds_until_refresh = 60;
             }
         }
     }
@@ -702,5 +702,151 @@ mod tests {
         app_state.handle_key("j"); // Should navigate context menu
         let new_action_value = format!("{:?}", app_state.context_menu.get_selected_action());
         assert_ne!(initial_action_value, new_action_value);
+    }
+
+    #[tokio::test]
+    async fn test_seconds_until_refresh_no_repos() {
+        let app_state = AppState {
+            repositories: vec![],
+            workflow_runs: HashMap::new(),
+            selected_repo: None,
+            selected_run: None,
+            popup: None,
+            context_menu: crate::ui::components::context_menu::ContextMenuComponent::new(),
+            settings: create_test_settings(vec![]),
+            github_client: crate::github::client::GithubClient::new(create_test_settings(vec![])).unwrap(),
+            last_repo_refresh_times: HashMap::new(),
+            ui_tx: mpsc::unbounded_channel().0,
+            seconds_until_refresh: 0,
+        };
+        
+        let seconds = app_state.seconds_until_refresh();
+        assert_eq!(seconds, 5); // Default when no repos
+    }
+
+    #[tokio::test]
+    async fn test_seconds_until_refresh_just_refreshed() {
+        let mut app_state = create_test_app_state();
+        let now = Utc::now();
+        
+        // Set refresh times to now
+        app_state.last_repo_refresh_times.insert("owner1/repo1".to_string(), now);
+        app_state.last_repo_refresh_times.insert("owner2/repo2".to_string(), now);
+        
+        let seconds = app_state.seconds_until_refresh();
+        // Should return the minimum refresh interval (5 seconds for very active)
+        assert_eq!(seconds, 5);
+    }
+
+    #[tokio::test]
+    async fn test_seconds_until_refresh_partial_time_elapsed() {
+        let mut app_state = create_test_app_state();
+        let now = Utc::now();
+        let four_seconds_ago = now - chrono::Duration::seconds(4);
+        
+        // Set repo1 refreshed 4 seconds ago (5 second interval)
+        app_state.last_repo_refresh_times.insert("owner1/repo1".to_string(), four_seconds_ago);
+        // Set repo2 refreshed now (300 second interval due to override)
+        app_state.last_repo_refresh_times.insert("owner2/repo2".to_string(), now);
+        
+        let seconds = app_state.seconds_until_refresh();
+        assert_eq!(seconds, 1); // repo1 needs refresh in 1 second
+    }
+
+    #[tokio::test]
+    async fn test_handle_ui_event_timer_update() {
+        let mut app_state = create_test_app_state();
+        
+        // Initial state (create_test_app_state sets it to 0)
+        assert_eq!(app_state.seconds_until_refresh, 0);
+        
+        // Handle timer update event
+        app_state.handle_ui_event(UiEvent::TimerUpdate(30));
+        
+        assert_eq!(app_state.seconds_until_refresh, 30);
+    }
+
+    #[tokio::test]
+    async fn test_handle_ui_event_workflow_runs_updated() {
+        let mut app_state = create_test_app_state();
+        let test_runs = vec![WorkflowRun {
+            id: 999,
+            name: "Test Workflow".to_string(),
+            branch: "main".to_string(),
+            commit_sha: "abc123".to_string(),
+            actor: "testuser".to_string(),
+            status: WorkflowStatus::Completed,
+            conclusion: Some(WorkflowConclusion::Success),
+            html_url: "https://github.com/test/repo/run/999".to_string(),
+            logs_url: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }];
+        
+        // Handle workflow runs updated event
+        app_state.handle_ui_event(UiEvent::WorkflowRunsUpdated("owner1/repo1".to_string(), test_runs.clone()));
+        
+        // Check that workflow runs were updated
+        assert!(app_state.workflow_runs.contains_key("owner1/repo1"));
+        let stored_runs = app_state.workflow_runs.get("owner1/repo1").unwrap();
+        assert_eq!(stored_runs.len(), 1);
+        assert_eq!(stored_runs[0].id, 999);
+        
+        // Check that refresh time was updated
+        assert!(app_state.last_repo_refresh_times.contains_key("owner1/repo1"));
+        
+        // Check that timer was set to refresh interval (5 seconds for very active repo)
+        assert_eq!(app_state.seconds_until_refresh, 5);
+    }
+
+    #[tokio::test]
+    async fn test_handle_ui_event_workflow_runs_updated_with_override() {
+        let mut app_state = create_test_app_state();
+        let test_runs = vec![WorkflowRun {
+            id: 999,
+            name: "Test Workflow".to_string(),
+            branch: "main".to_string(),
+            commit_sha: "abc123".to_string(),
+            actor: "testuser".to_string(),
+            status: WorkflowStatus::Completed,
+            conclusion: Some(WorkflowConclusion::Success),
+            html_url: "https://github.com/test/repo/run/999".to_string(),
+            logs_url: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }];
+        
+        // Handle workflow runs updated event for repo2 (has 300 second override)
+        app_state.handle_ui_event(UiEvent::WorkflowRunsUpdated("owner2/repo2".to_string(), test_runs.clone()));
+        
+        // Check that timer was set to override interval (300 seconds)
+        assert_eq!(app_state.seconds_until_refresh, 300);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_refresh_interval_very_active_new() {
+        let app_state = create_test_app_state();
+        
+        // repo1 has very recent activity (should get 5s refresh)
+        let interval = app_state.calculate_refresh_interval("owner1/repo1");
+        assert_eq!(interval.as_secs(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_refresh_interval_with_override_new() {
+        let app_state = create_test_app_state();
+        
+        // repo2 has override to 5 minutes (300s)
+        let interval = app_state.calculate_refresh_interval("owner2/repo2");
+        assert_eq!(interval.as_secs(), 300);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_refresh_interval_unknown_repo_new() {
+        let app_state = create_test_app_state();
+        
+        // Unknown repo should get inactive refresh (2 hours = 7200s)
+        let interval = app_state.calculate_refresh_interval("unknown/repo");
+        assert_eq!(interval.as_secs(), 7200);
     }
 }

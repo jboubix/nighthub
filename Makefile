@@ -39,10 +39,10 @@ clean:
 	rm -f nighthub
 	rm -f *.tar.gz
 
-# Install to system
+# Install to system (atomic replacement - safe while running)
 install: release
 	mkdir -p ~/.local/bin
-	cp nighthub ~/.local/bin/
+	mv nighthub ~/.local/bin/
 
 # Format code
 fmt:

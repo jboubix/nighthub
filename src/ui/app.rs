@@ -4,14 +4,21 @@ use crate::github::client::GithubClient;
 use crate::github::models::{Repository, WorkflowRun};
 use crate::ui::components::context_menu::ContextMenuComponent;
 use std::collections::HashMap;
-use std::process::Command;
+
 use std::time::Duration;
 use chrono::{DateTime, Utc};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PopupType {
     ContextMenu,
     Logs,
+}
+
+#[derive(Debug, Clone)]
+pub enum UiEvent {
+    TimerUpdate(u64),
+    WorkflowRunsUpdated(String, Vec<WorkflowRun>),
 }
 
 pub struct AppState {
@@ -24,6 +31,8 @@ pub struct AppState {
     pub settings: Settings,
     pub github_client: GithubClient,
     pub last_repo_refresh_times: HashMap<String, DateTime<Utc>>,
+    pub ui_tx: mpsc::UnboundedSender<UiEvent>,
+    pub seconds_until_refresh: u64,
 }
 
 impl AppState {
@@ -80,6 +89,27 @@ impl AppState {
             settings,
             github_client,
             last_repo_refresh_times: HashMap::new(),
+            ui_tx: mpsc::unbounded_channel().0,
+            seconds_until_refresh: 60,
+        })
+    }
+
+    pub async fn new_with_channel(settings: Settings, ui_tx: mpsc::UnboundedSender<UiEvent>) -> Result<Self, AppError> {
+        let github_client = GithubClient::new(settings.clone())?;
+        let repositories = github_client.fetch_repositories().await?;
+
+        Ok(AppState {
+            repositories,
+            workflow_runs: HashMap::new(),
+            selected_repo: None,
+            selected_run: None,
+            popup: None,
+            context_menu: ContextMenuComponent::new(),
+            settings,
+            github_client,
+            last_repo_refresh_times: HashMap::new(),
+            ui_tx,
+            seconds_until_refresh: 60,
         })
     }
 
@@ -218,16 +248,24 @@ impl AppState {
 
     pub fn open_in_browser(&self) -> Result<(), AppError> {
         if let Some(url) = self.get_selected_run_url() {
-            #[cfg(target_os = "macos")]
-            Command::new("open").arg(&url).spawn()?;
-
-            #[cfg(target_os = "linux")]
-            Command::new("xdg-open").arg(&url).spawn()?;
-
-            #[cfg(target_os = "windows")]
-            Command::new("cmd").arg("/C").arg("start").arg(&url).spawn()?;
+            webbrowser::open(&url)
+                .map_err(|e| AppError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
         }
         Ok(())
+    }
+
+    pub fn handle_ui_event(&mut self, event: UiEvent) {
+        match event {
+            UiEvent::TimerUpdate(seconds) => {
+                self.seconds_until_refresh = seconds;
+            }
+            UiEvent::WorkflowRunsUpdated(repo_name, runs) => {
+                self.workflow_runs.insert(repo_name.clone(), runs);
+                self.last_repo_refresh_times.insert(repo_name.clone(), Utc::now());
+                // Reset timer after successful refresh
+                self.seconds_until_refresh = 60;
+            }
+        }
     }
 
     pub fn handle_key(&mut self, key: &str) {
@@ -386,6 +424,8 @@ mod tests {
             settings,
             github_client: crate::github::client::GithubClient::new(create_test_settings(vec![])).unwrap(),
             last_repo_refresh_times: HashMap::new(),
+            ui_tx: mpsc::unbounded_channel().0,
+            seconds_until_refresh: 0,
         }
     }
 
@@ -564,6 +604,8 @@ mod tests {
             settings: create_test_settings(vec![]),
             github_client: crate::github::client::GithubClient::new(create_test_settings(vec![])).unwrap(),
             last_repo_refresh_times: HashMap::new(),
+            ui_tx: mpsc::unbounded_channel().0,
+            seconds_until_refresh: 0,
         };
         
         // Should not panic with no repositories

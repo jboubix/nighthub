@@ -13,8 +13,9 @@ pub trait GitHubApiClient {
     async fn get_repository(&self, route: &str) -> Result<ApiRepository, AppError>;
 }
 
+#[derive(Clone)]
 pub struct GithubClient {
-    client: Box<dyn GitHubApiClient + Send + Sync>,
+    client: std::sync::Arc<Box<dyn GitHubApiClient + Send + Sync>>,
     settings: Settings,
 }
 
@@ -73,13 +74,16 @@ impl GithubClient {
         let octocrab = Octocrab::builder()
             .personal_token(SecretString::new(settings.github_token().to_string()))
             .build()?;
-        let client = Box::new(OctocrabAdapter { inner: octocrab });
+        let client = std::sync::Arc::new(Box::new(OctocrabAdapter { inner: octocrab }) as Box<dyn GitHubApiClient + Send + Sync>);
         Ok(GithubClient { client, settings })
     }
 
     #[cfg(test)]
     pub fn new_with_client(settings: Settings, client: Box<dyn GitHubApiClient + Send + Sync>) -> Self {
-        GithubClient { client, settings }
+        GithubClient { 
+            client: std::sync::Arc::new(client as Box<dyn GitHubApiClient + Send + Sync>), 
+            settings 
+        }
     }
 
     #[cfg(test)]

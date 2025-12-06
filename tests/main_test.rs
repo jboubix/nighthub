@@ -155,6 +155,8 @@ fn create_mock_app_state() -> AppState {
         settings,
         github_client: nighthub::github::client::GithubClient::new(create_test_settings()).unwrap(),
         last_repo_refresh_times: HashMap::new(),
+            ui_tx: tokio::sync::mpsc::unbounded_channel().0,
+        seconds_until_refresh: 60,
     }
 }
 
@@ -538,6 +540,8 @@ mod main_application_tests {
             settings,
             github_client: nighthub::github::client::GithubClient::new(create_test_settings()).unwrap(),
             last_repo_refresh_times: HashMap::new(),
+        ui_tx: tokio::sync::mpsc::unbounded_channel().0,
+            seconds_until_refresh: 60,
         };
         
         let mut workflow_list = WorkflowListComponent::new();

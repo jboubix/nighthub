@@ -15,9 +15,11 @@ use ratatui::{
     Terminal,
 };
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, poll},
-    terminal::{disable_raw_mode, enable_raw_mode},
+    event::{self, Event, KeyCode, KeyEventKind},
+    terminal::{enable_raw_mode, disable_raw_mode, Clear},
+    execute,
 };
+use tokio::sync::mpsc;
 
 #[derive(Parser)]
 #[command(name = "nighthub")]
@@ -33,15 +35,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     setup_logging();
 
     let settings = Settings::new()?;
-    let mut app_state = AppState::new(settings).await?;
-
+    let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
+    let mut app_state = AppState::new_with_channel(settings, ui_tx).await?;
+    
+    // Initial refresh to populate workflow runs
     app_state.refresh().await?;
 
     enable_raw_mode()?;
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    terminal.clear()?;
+    execute!(std::io::stdout(), Clear(crossterm::terminal::ClearType::All))?;
 
     let mut workflow_list = WorkflowListComponent::new();
 
@@ -57,22 +61,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             break;
         }
 
-        // Check if it's time to refresh
-        if app_state.seconds_until_refresh() == 0 {
-            if let Err(e) = app_state.refresh().await {
-                eprintln!("Error refreshing: {}", e);
-            }
+        // Handle UI events from background tasks
+        while let Ok(ui_event) = ui_rx.try_recv() {
+            app_state.handle_ui_event(ui_event);
         }
 
         terminal.draw(|f| {
-            // Create a list of repository names for the UI component
+            // Create a list of repository names for UI component
             let repo_names: Vec<String> = app_state.repositories.iter().map(|r| r.full_name.clone()).collect();
 
-            // Get seconds until next refresh
-            let seconds_until_refresh = app_state.seconds_until_refresh();
-
-            // Render the workflow list component with timer
-            workflow_list.render(f, f.area(), &app_state.workflow_runs, &repo_names, seconds_until_refresh);
+            // Render workflow list component with timer
+            workflow_list.render(f, f.area(), &app_state.workflow_runs, &repo_names, app_state.seconds_until_refresh());
 
             // Render context menu if open
             if let Some(popup_type) = app_state.popup {
@@ -93,7 +92,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         })?;
 
         // Poll for events with timeout to keep UI responsive and update timer
-        if poll(Duration::from_millis(100))? {
+        if crossterm::event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 // Only handle key press events, not repeat/release events
                 if key.kind == KeyEventKind::Press {
@@ -102,7 +101,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         KeyCode::Char('q') => break,
                     KeyCode::Char('j') | KeyCode::Down => {
                         if app_state.popup.is_none() {
-                            workflow_list.next_repo(app_state.repositories.len());
+                            let repo_names: Vec<String> = app_state.repositories.iter().map(|r| r.full_name.clone()).collect();
+                            workflow_list.next_run(&app_state.workflow_runs, &repo_names);
                             // Sync app_state with workflow_list selection
                             app_state.selected_repo = Some(workflow_list.selected_repo_index);
                             app_state.selected_run = Some(workflow_list.selected_run_index);
@@ -112,7 +112,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
                         if app_state.popup.is_none() {
-                            workflow_list.previous_repo(app_state.repositories.len());
+                            let repo_names: Vec<String> = app_state.repositories.iter().map(|r| r.full_name.clone()).collect();
+                            workflow_list.previous_run(&app_state.workflow_runs, &repo_names);
                             // Sync app_state with workflow_list selection
                             app_state.selected_repo = Some(workflow_list.selected_repo_index);
                             app_state.selected_run = Some(workflow_list.selected_run_index);
@@ -122,8 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     KeyCode::Char('l') | KeyCode::Right => {
                         if app_state.popup.is_none() {
-                            let repo_names: Vec<String> = app_state.repositories.iter().map(|r| r.full_name.clone()).collect();
-                            workflow_list.next_run(&app_state.workflow_runs, &repo_names);
+                            workflow_list.next_repo(app_state.repositories.len());
                             // Sync app_state with workflow_list selection
                             app_state.selected_repo = Some(workflow_list.selected_repo_index);
                             app_state.selected_run = Some(workflow_list.selected_run_index);
@@ -131,8 +131,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     KeyCode::Char('h') | KeyCode::Left => {
                         if app_state.popup.is_none() {
-                            let repo_names: Vec<String> = app_state.repositories.iter().map(|r| r.full_name.clone()).collect();
-                            workflow_list.previous_run(&app_state.workflow_runs, &repo_names);
+                            workflow_list.previous_repo(app_state.repositories.len());
                             // Sync app_state with workflow_list selection
                             app_state.selected_repo = Some(workflow_list.selected_repo_index);
                             app_state.selected_run = Some(workflow_list.selected_run_index);
@@ -140,9 +139,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     KeyCode::Char('r') => {
                         if app_state.popup.is_none() {
-                            // Force immediate refresh
+                            // Force immediate refresh (non-blocking)
                             if let Err(e) = app_state.refresh().await {
-                                eprintln!("Error refreshing: {}", e);
+                                eprintln!("Error triggering refresh: {}", e);
                             }
                         }
                     }

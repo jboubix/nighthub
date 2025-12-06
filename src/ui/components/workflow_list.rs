@@ -65,13 +65,21 @@ impl WorkflowListComponent {
                     lines.push(Line::from(vec![
                         Span::styled("  ", Style::default()),
                         Span::styled(
-                            format!("{} {} {} - {}", 
+                            format!("{} {} {} - {} ({})", 
                                 status_icon, 
                                 conclusion_icon,
                                 run.name,
-                                run.branch
+                                run.branch,
+                                crate::utils::time::format_relative_time(run.updated_at)
                             ),
-                            Style::default().fg(if is_selected { Color::White } else { Color::Gray })
+                            if is_selected {
+                                Style::default()
+                                    .fg(Color::White)
+                                    .bg(Color::DarkGray)
+                                    .add_modifier(ratatui::style::Modifier::ITALIC)
+                            } else {
+                                Style::default().fg(Color::Gray)
+                            }
                         )
                     ]));
                 }
@@ -99,24 +107,87 @@ impl WorkflowListComponent {
     }
 
     pub fn next_run(&mut self, workflow_runs: &HashMap<String, Vec<WorkflowRun>>, repo_names: &[String]) {
-        if let Some(repo_name) = repo_names.get(self.selected_repo_index) {
+        if repo_names.is_empty() {
+            return;
+        }
+
+        // Get all workflow runs in order
+        let mut all_runs = Vec::new();
+        
+        for (repo_idx, repo_name) in repo_names.iter().enumerate() {
             if let Some(runs) = workflow_runs.get(repo_name) {
-                let run_count = runs.len();
-                if run_count > 0 {
-                    self.selected_run_index = (self.selected_run_index + 1) % run_count;
+                for (run_idx, _) in runs.iter().enumerate() {
+                    all_runs.push((repo_idx, run_idx));
                 }
             }
+        }
+
+        if all_runs.is_empty() {
+            return;
+        }
+
+        // Find current position
+        let current_pos = all_runs.iter().position(|&(repo_idx, run_idx)| {
+            repo_idx == self.selected_repo_index && run_idx == self.selected_run_index
+        });
+
+        if let Some(current_idx) = current_pos {
+            // Move to next run (with wraparound)
+            let next_idx = (current_idx + 1) % all_runs.len();
+            let (new_repo_idx, new_run_idx) = all_runs[next_idx];
+            self.selected_repo_index = new_repo_idx;
+            self.selected_run_index = new_run_idx;
+        } else {
+            // If current selection is invalid, select first run
+            let (first_repo_idx, first_run_idx) = all_runs[0];
+            self.selected_repo_index = first_repo_idx;
+            self.selected_run_index = first_run_idx;
         }
     }
 
     pub fn previous_run(&mut self, workflow_runs: &HashMap<String, Vec<WorkflowRun>>, repo_names: &[String]) {
-        if let Some(repo_name) = repo_names.get(self.selected_repo_index) {
+        if repo_names.is_empty() {
+            return;
+        }
+
+        // Get all workflow runs in order
+        let mut all_runs = Vec::new();
+        let mut run_positions = Vec::new();
+        
+        for (repo_idx, repo_name) in repo_names.iter().enumerate() {
             if let Some(runs) = workflow_runs.get(repo_name) {
-                let run_count = runs.len();
-                if run_count > 0 {
-                    self.selected_run_index = (self.selected_run_index + run_count - 1) % run_count;
+                for (run_idx, _) in runs.iter().enumerate() {
+                    all_runs.push((repo_idx, run_idx));
+                    run_positions.push((repo_idx, run_idx));
                 }
             }
+        }
+
+        if all_runs.is_empty() {
+            return;
+        }
+
+        // Find current position
+        let current_pos = all_runs.iter().position(|&(repo_idx, run_idx)| {
+            repo_idx == self.selected_repo_index && run_idx == self.selected_run_index
+        });
+
+        if let Some(current_idx) = current_pos {
+            // Move to previous run (with wraparound)
+            let prev_idx = if current_idx == 0 {
+                all_runs.len() - 1
+            } else {
+                current_idx - 1
+            };
+            
+            let (new_repo_idx, new_run_idx) = all_runs[prev_idx];
+            self.selected_repo_index = new_repo_idx;
+            self.selected_run_index = new_run_idx;
+        } else {
+            // If current selection is invalid, select first run
+            let (first_repo_idx, first_run_idx) = all_runs[0];
+            self.selected_repo_index = first_repo_idx;
+            self.selected_run_index = first_run_idx;
         }
     }
 

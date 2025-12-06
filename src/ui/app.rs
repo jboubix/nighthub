@@ -33,6 +33,7 @@ pub struct AppState {
     pub last_repo_refresh_times: HashMap<String, DateTime<Utc>>,
     pub ui_tx: mpsc::UnboundedSender<UiEvent>,
     pub seconds_until_refresh: u64,
+    pub is_refreshing: bool,
 }
 
 impl AppState {
@@ -91,6 +92,7 @@ impl AppState {
             last_repo_refresh_times: HashMap::new(),
             ui_tx: mpsc::unbounded_channel().0,
             seconds_until_refresh: 60,
+            is_refreshing: false,
         })
     }
 
@@ -110,35 +112,42 @@ impl AppState {
             last_repo_refresh_times: HashMap::new(),
             ui_tx,
             seconds_until_refresh: 60,
+            is_refreshing: false,
         })
     }
 
     pub async fn refresh(&mut self) -> Result<(), AppError> {
+        self.is_refreshing = true;
         let now = Utc::now();
         
-        for repo in &self.repositories {
-            // Check if this repository needs refreshing
-            let needs_refresh = if let Some(last_refresh_time) = self.last_repo_refresh_times.get(&repo.full_name) {
-                let refresh_interval = self.calculate_refresh_interval(&repo.full_name);
-                let time_since_refresh = now - *last_refresh_time;
-                let refresh_interval_chrono = chrono::Duration::from_std(refresh_interval)
-                    .unwrap_or(chrono::Duration::seconds(5));
-                time_since_refresh >= refresh_interval_chrono
-            } else {
-                // Never refreshed, so refresh now
-                true
-            };
-            
-            if needs_refresh {
-                let runs = self
-                    .github_client
-                    .fetch_workflow_runs(&repo.owner, &repo.name)
-                    .await?;
-                self.workflow_runs.insert(repo.full_name.clone(), runs);
-                self.last_repo_refresh_times.insert(repo.full_name.clone(), now);
+        let result = (async {
+            for repo in &self.repositories {
+                // Check if this repository needs refreshing
+                let needs_refresh = if let Some(last_refresh_time) = self.last_repo_refresh_times.get(&repo.full_name) {
+                    let refresh_interval = self.calculate_refresh_interval(&repo.full_name);
+                    let time_since_refresh = now - *last_refresh_time;
+                    let refresh_interval_chrono = chrono::Duration::from_std(refresh_interval)
+                        .unwrap_or(chrono::Duration::seconds(5));
+                    time_since_refresh >= refresh_interval_chrono
+                } else {
+                    // Never refreshed, so refresh now
+                    true
+                };
+                
+                if needs_refresh {
+                    let runs = self
+                        .github_client
+                        .fetch_workflow_runs(&repo.owner, &repo.name)
+                        .await?;
+                    self.workflow_runs.insert(repo.full_name.clone(), runs);
+                    self.last_repo_refresh_times.insert(repo.full_name.clone(), now);
+                }
             }
-        }
-        Ok(())
+            Ok::<(), AppError>(())
+        }).await;
+        
+        self.is_refreshing = false;
+        result
     }
 
     pub fn seconds_until_refresh(&self) -> u64 {
@@ -415,17 +424,18 @@ mod tests {
         ]);
 
         AppState {
-            repositories: repos,
-            workflow_runs,
+            repositories: vec![],
+            workflow_runs: HashMap::new(),
             selected_repo: None,
             selected_run: None,
             popup: None,
             context_menu: crate::ui::components::context_menu::ContextMenuComponent::new(),
-            settings,
+            settings: create_test_settings(vec![]),
             github_client: crate::github::client::GithubClient::new(create_test_settings(vec![])).unwrap(),
             last_repo_refresh_times: HashMap::new(),
             ui_tx: mpsc::unbounded_channel().0,
             seconds_until_refresh: 0,
+            is_refreshing: false,
         }
     }
 

@@ -29,11 +29,20 @@ impl WorkflowListComponent {
         workflow_runs: &HashMap<String, Vec<WorkflowRun>>,
         repo_names: &[String],
         seconds_until_refresh: u64,
+        is_refreshing: bool,
     ) {
         let mut lines = vec![];
 
         // Add timer information
-        let timer_text = if seconds_until_refresh < 60 {
+        let timer_text = if is_refreshing {
+            // Simple spinner frames
+            let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let frame_index = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() / 100) as usize % spinner_frames.len();
+            format!("{} Refreshing...", spinner_frames[frame_index])
+        } else if seconds_until_refresh < 60 {
             format!("Refresh in {}s", seconds_until_refresh)
         } else {
             format!("Refresh in {}m {}", seconds_until_refresh / 60, seconds_until_refresh % 60)
@@ -292,18 +301,25 @@ mod tests {
         
         // Test with different timer values
         let area = frame.area();
-        component.render(&mut frame, area, &runs, &repo_names, 0);
+        component.render(&mut frame, area, &runs, &repo_names, 0, false);
         
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut frame = terminal.get_frame();
         let area = frame.area();
-        component.render(&mut frame, area, &runs, &repo_names, 30);
+        component.render(&mut frame, area, &runs, &repo_names, 30, false);
         
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut frame = terminal.get_frame();
         let area = frame.area();
-        component.render(&mut frame, area, &runs, &repo_names, 120);
+        component.render(&mut frame, area, &runs, &repo_names, 120, false);
+        
+        // Test refreshing state
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut frame = terminal.get_frame();
+        let area = frame.area();
+        component.render(&mut frame, area, &runs, &repo_names, 0, true);
     }
 }

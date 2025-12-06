@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let repo_names: Vec<String> = app_state.repositories.iter().map(|r| r.full_name.clone()).collect();
 
             // Render workflow list component with timer
-            workflow_list.render(f, f.area(), &app_state.workflow_runs, &repo_names, app_state.seconds_until_refresh());
+            workflow_list.render(f, f.area(), &app_state.workflow_runs, &repo_names, app_state.seconds_until_refresh(), app_state.is_refreshing);
 
             // Render context menu if open
             if let Some(popup_type) = app_state.popup {

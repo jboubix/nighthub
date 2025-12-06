@@ -262,8 +262,8 @@ impl AppState {
             UiEvent::WorkflowRunsUpdated(repo_name, runs) => {
                 self.workflow_runs.insert(repo_name.clone(), runs);
                 self.last_repo_refresh_times.insert(repo_name.clone(), Utc::now());
-                // Reset timer after successful refresh
-                self.seconds_until_refresh = 60;
+                // Update timer with calculated refresh interval
+                self.seconds_until_refresh = self.seconds_until_refresh();
             }
         }
     }

@@ -81,6 +81,13 @@ pub async fn new(settings: Settings) -> Result<Self, AppError> {
     let mut app_state = AppState::new_without_refresh(settings).await?;
     // Initial refresh to populate workflow data and set proper timers
     let _ = app_state.refresh(true).await;
+    
+    // Initialize selection if we have repositories
+    if !app_state.repositories.is_empty() {
+        app_state.selected_repo = Some(0);
+        app_state.selected_run = Some(0);
+    }
+    
     Ok(app_state)
 }
 

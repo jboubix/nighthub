@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     execute!(std::io::stdout(), Clear(crossterm::terminal::ClearType::All))?;
 
-    let workflow_list = WorkflowListComponent::new();
+    let mut workflow_list = WorkflowListComponent::new();
 
     let should_exit = Arc::new(AtomicBool::new(false));
     let should_exit_clone = Arc::clone(&should_exit);
@@ -79,6 +79,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // Create a list of repository names for UI component
             let repo_names: Vec<String> = app_state.repositories.iter().map(|r| r.full_name.clone()).collect();
 
+            // Sync workflow list selection with app state
+            if let Some(selected_repo) = app_state.selected_repo {
+                workflow_list.selected_repo_index = selected_repo;
+            }
+            if let Some(selected_run) = app_state.selected_run {
+                workflow_list.selected_run_index = selected_run;
+            }
+            
+            // Debug: log state info
+            std::fs::write("/tmp/state.log", format!(
+                "Repos: {}, Selected repo: {:?}, Selected run: {:?}\n",
+                app_state.repositories.len(),
+                app_state.selected_repo,
+                app_state.selected_run
+            )).ok();
+
             // Render workflow list component with timer
             workflow_list.render(f, f.area(), &app_state.workflow_runs, &repo_names, app_state.seconds_until_refresh(), app_state.is_refreshing);
 
@@ -103,32 +119,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Poll for events with timeout to keep UI responsive and update timer
         if crossterm::event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                // Debug: log key events
+                std::fs::write("/tmp/keys.log", format!("Key: {:?}\n", key.code)).ok();
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => break,
                         KeyCode::Char('q') => break,
                         KeyCode::Char('j') | KeyCode::Down => {
                             if app_state.popup.is_none() {
-                                app_state.next_repo();
-                            } else if let Some(nighthub::ui::app::PopupType::ContextMenu) = app_state.popup {
-                                app_state.context_menu.next();
+                                app_state.next_run();
                             }
                         }
                         KeyCode::Char('k') | KeyCode::Up => {
                             if app_state.popup.is_none() {
-                                app_state.previous_repo();
-                            } else if let Some(nighthub::ui::app::PopupType::ContextMenu) = app_state.popup {
-                                app_state.context_menu.previous();
+                                app_state.previous_run();
                             }
                         }
                         KeyCode::Char('l') | KeyCode::Right => {
                             if app_state.popup.is_none() {
-                                app_state.next_run();
+                                app_state.next_repo();
                             }
                         }
                         KeyCode::Char('h') | KeyCode::Left => {
                             if app_state.popup.is_none() {
-                                app_state.previous_run();
+                                app_state.previous_repo();
                             }
                         }
                         KeyCode::Char('f') => {

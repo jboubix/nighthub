@@ -3,11 +3,12 @@ use crate::error::AppError;
 use crate::github::client::GithubClient;
 use crate::github::models::{Repository, WorkflowRun};
 use crate::ui::components::context_menu::ContextMenuComponent;
+use crate::utils::logging::{log_error, log_info, log_warn};
 use std::collections::HashMap;
 
 use std::time::Duration;
 use chrono::{DateTime, Utc};
-use tokio::sync::mpsc;
+
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PopupType {
@@ -15,11 +16,7 @@ pub enum PopupType {
     Logs,
 }
 
-#[derive(Debug, Clone)]
-pub enum UiEvent {
-    TimerUpdate(u64),
-    WorkflowRunsUpdated(String, Vec<WorkflowRun>),
-}
+
 
 pub struct AppState {
     pub repositories: Vec<Repository>,
@@ -31,33 +28,19 @@ pub struct AppState {
     pub settings: Settings,
     pub github_client: GithubClient,
     pub last_repo_refresh_times: HashMap<String, DateTime<Utc>>,
-    pub ui_tx: mpsc::UnboundedSender<UiEvent>,
-    pub seconds_until_refresh: u64,
     pub is_refreshing: bool,
 }
 
 impl AppState {
-    /// Calculate refresh interval based on activity and optional override
+    /// Calculate refresh interval based on activity (pure tiered logic)
     fn calculate_refresh_interval(&self, repo_full_name: &str) -> Duration {
-        // Get repository config to check for override
-        let repo_config = self.settings.repositories()
-            .iter()
-            .find(|config| format!("{}/{}", config.owner, config.name) == repo_full_name);
-        
-        // If override specified, use it regardless of activity
-        if let Some(config) = repo_config {
-            if let Some(override_secs) = config.refresh_interval_seconds {
-                return Duration::from_secs(override_secs);
-            }
-        }
-        
-        // Otherwise use tiered calculation based on activity
+        // Tiered calculation based on activity
         if let Some(runs) = self.workflow_runs.get(repo_full_name) {
             if let Some(latest_run) = runs.first() {
                 let now = Utc::now();
                 let time_since_activity = now - latest_run.updated_at;
                 
-                if time_since_activity.num_hours() < 2 {
+                if time_since_activity.num_seconds() < 7200 {  // <2 hours
                     Duration::from_secs(5)        // Very active: 5 seconds
                 } else if time_since_activity.num_hours() < 24 {
                     Duration::from_secs(60)       // Moderately active: 1 minute
@@ -76,54 +59,44 @@ impl AppState {
 
 
 
-    pub async fn new(settings: Settings) -> Result<Self, AppError> {
-        let github_client = GithubClient::new(settings.clone())?;
-        let repositories = github_client.fetch_repositories().await?;
+pub async fn new_without_refresh(settings: Settings) -> Result<Self, AppError> {
+    let github_client = GithubClient::new(settings.clone())?;
+    let repositories = github_client.fetch_repositories().await?;
 
-        Ok(AppState {
-            repositories,
-            workflow_runs: HashMap::new(),
-            selected_repo: None,
-            selected_run: None,
-            popup: None,
-            context_menu: ContextMenuComponent::new(),
-            settings,
-            github_client,
-            last_repo_refresh_times: HashMap::new(),
-            ui_tx: mpsc::unbounded_channel().0,
-            seconds_until_refresh: 60,
-            is_refreshing: false,
-        })
-    }
+    Ok(AppState {
+        repositories,
+        workflow_runs: HashMap::new(),
+        selected_repo: None,
+        selected_run: None,
+        popup: None,
+        context_menu: ContextMenuComponent::new(),
+        settings,
+        github_client,
+        last_repo_refresh_times: HashMap::new(),
+        is_refreshing: false,
+    })
+}
 
-    pub async fn new_with_channel(settings: Settings, ui_tx: mpsc::UnboundedSender<UiEvent>) -> Result<Self, AppError> {
-        let github_client = GithubClient::new(settings.clone())?;
-        let repositories = github_client.fetch_repositories().await?;
+pub async fn new(settings: Settings) -> Result<Self, AppError> {
+    let mut app_state = AppState::new_without_refresh(settings).await?;
+    // Initial refresh to populate workflow data and set proper timers
+    let _ = app_state.refresh(true).await;
+    Ok(app_state)
+}
 
-        Ok(AppState {
-            repositories,
-            workflow_runs: HashMap::new(),
-            selected_repo: None,
-            selected_run: None,
-            popup: None,
-            context_menu: ContextMenuComponent::new(),
-            settings,
-            github_client,
-            last_repo_refresh_times: HashMap::new(),
-            ui_tx,
-            seconds_until_refresh: 60,
-            is_refreshing: false,
-        })
-    }
 
-    pub async fn refresh(&mut self) -> Result<(), AppError> {
-        self.is_refreshing = true;
-        let now = Utc::now();
-        
-        let result = (async {
-            for repo in &self.repositories {
-                // Check if this repository needs refreshing
-                let needs_refresh = if let Some(last_refresh_time) = self.last_repo_refresh_times.get(&repo.full_name) {
+
+pub async fn refresh(&mut self, force_all: bool) -> Result<(), AppError> {
+    self.is_refreshing = true;
+    let now = Utc::now();
+    
+    // Collect repositories to refresh
+    let repos_to_refresh: Vec<_> = if force_all {
+        self.repositories.iter().cloned().collect()
+    } else {
+        self.repositories.iter()
+            .filter(|repo| {
+                if let Some(last_refresh_time) = self.last_repo_refresh_times.get(&repo.full_name) {
                     let refresh_interval = self.calculate_refresh_interval(&repo.full_name);
                     let time_since_refresh = now - *last_refresh_time;
                     let refresh_interval_chrono = chrono::Duration::from_std(refresh_interval)
@@ -132,23 +105,85 @@ impl AppState {
                 } else {
                     // Never refreshed, so refresh now
                     true
-                };
-                
-                if needs_refresh {
-                    let runs = self
-                        .github_client
-                        .fetch_workflow_runs(&repo.owner, &repo.name)
-                        .await?;
-                    self.workflow_runs.insert(repo.full_name.clone(), runs);
-                    self.last_repo_refresh_times.insert(repo.full_name.clone(), now);
                 }
-            }
-            Ok::<(), AppError>(())
-        }).await;
-        
+            })
+            .cloned()
+            .collect()
+    };
+    
+    if repos_to_refresh.is_empty() {
         self.is_refreshing = false;
-        result
+        return Ok(());
     }
+    
+    log_info(format!("Refreshing {} repositories (force_all={})", repos_to_refresh.len(), force_all));
+    
+    // Use a semaphore to limit concurrent requests
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        self.settings.monitoring.max_concurrent_requests
+    ));
+    
+    // Spawn parallel tasks for each repository with concurrency control
+    let mut tasks = Vec::new();
+    for repo in repos_to_refresh {
+        let github_client = self.github_client.clone();
+        let repo_name = repo.full_name.clone();
+        let owner = repo.owner.clone();
+        let name = repo.name.clone();
+        let semaphore = std::sync::Arc::clone(&semaphore);
+        
+        let task = tokio::spawn(async move {
+            // Acquire semaphore permit before making request
+            let _permit = semaphore.acquire().await
+                .map_err(|_| AppError::GithubError("Failed to acquire semaphore permit".to_string()))?;
+            
+            let runs = github_client
+                .fetch_workflow_runs(&owner, &name)
+                .await?;
+            Ok::<(String, Vec<WorkflowRun>), AppError>((repo_name, runs))
+        });
+        tasks.push(task);
+    }
+    
+    // Wait for all tasks to complete with timeout
+    let results = tokio::time::timeout(
+        Duration::from_secs(60), // Total timeout for all operations
+        futures::future::join_all(tasks)
+    ).await
+    .map_err(|_| AppError::GithubError("Refresh operation timed out".to_string()))?;
+    
+    // Process results
+    let mut success_count = 0;
+    let mut error_count = 0;
+    
+    for result in results {
+        match result {
+            Ok(Ok((repo_name, runs))) => {
+                self.workflow_runs.insert(repo_name.clone(), runs);
+                self.last_repo_refresh_times.insert(repo_name, now);
+                success_count += 1;
+            }
+            Ok(Err(e)) => {
+                log_error(format!("Failed to refresh repository: {}", e));
+                error_count += 1;
+            }
+            Err(e) => {
+                log_error(format!("Task join error: {}", e));
+                error_count += 1;
+            }
+        }
+    }
+    
+    // Log summary if there were errors
+    if error_count > 0 {
+        log_warn(format!("Refresh completed: {} successful, {} failed", success_count, error_count));
+    } else {
+        log_info(format!("Refresh completed: {} successful", success_count));
+    }
+    
+    self.is_refreshing = false;
+    Ok(())
+}
 
     pub fn seconds_until_refresh(&self) -> u64 {
         let now = Utc::now();
@@ -263,19 +298,10 @@ impl AppState {
         Ok(())
     }
 
-    pub fn handle_ui_event(&mut self, event: UiEvent) {
-        match event {
-            UiEvent::TimerUpdate(seconds) => {
-                self.seconds_until_refresh = seconds;
-            }
-            UiEvent::WorkflowRunsUpdated(repo_name, runs) => {
-                self.workflow_runs.insert(repo_name.clone(), runs);
-                self.last_repo_refresh_times.insert(repo_name.clone(), Utc::now());
-                // Reset timer after successful refresh - this will be calculated dynamically in seconds_until_refresh()
-                self.seconds_until_refresh = 60;
-            }
-        }
-    }
+    // Removed handle_ui_event since timer is computed dynamically
+// UiEvent enum can be removed if not used elsewhere
+
+
 
     pub fn handle_key(&mut self, key: &str) {
         match key {
@@ -347,7 +373,7 @@ mod tests {
         }
     }
 
-    fn create_test_app_state() -> AppState {
+fn create_test_app_state() -> AppState {
         let repos = vec![
             Repository {
                 id: 1,
@@ -388,7 +414,7 @@ mod tests {
 
         let mut workflow_runs = HashMap::new();
         let now = Utc::now();
-
+        
         // Add recent workflow run for repo1 (should get 5s refresh)
         workflow_runs.insert("owner1/repo1".to_string(), vec![
             WorkflowRun {
@@ -424,14 +450,14 @@ mod tests {
         ]);
 
         AppState {
-            repositories: vec![],
-            workflow_runs: HashMap::new(),
+            repositories: repos,
+            workflow_runs,
             selected_repo: None,
             selected_run: None,
             popup: None,
             context_menu: crate::ui::components::context_menu::ContextMenuComponent::new(),
-            settings: create_test_settings(vec![]),
-            github_client: crate::github::client::GithubClient::new(create_test_settings(vec![])).unwrap(),
+            settings: settings.clone(),
+            github_client: crate::github::client::GithubClient::new(settings.clone()).unwrap(),
             last_repo_refresh_times: HashMap::new(),
             ui_tx: mpsc::unbounded_channel().0,
             seconds_until_refresh: 0,
@@ -616,6 +642,7 @@ mod tests {
             last_repo_refresh_times: HashMap::new(),
             ui_tx: mpsc::unbounded_channel().0,
             seconds_until_refresh: 0,
+            is_refreshing: false,
         };
         
         // Should not panic with no repositories
@@ -728,6 +755,7 @@ mod tests {
             last_repo_refresh_times: HashMap::new(),
             ui_tx: mpsc::unbounded_channel().0,
             seconds_until_refresh: 0,
+            is_refreshing: false,
         };
         
         let seconds = app_state.seconds_until_refresh();

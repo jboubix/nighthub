@@ -7,6 +7,7 @@ A sleek, compact terminal UI tool for monitoring GitHub Actions workflows across
 - **Real-time Monitoring**: Watch GitHub Actions workflows with configurable refresh rates
 - **Compact Horizontal Layout**: Each repository shown on one line with status icons and refresh countdown timer (e.g., `org/repo (30s): ✅✅❌✅❌`)
 - **Keyboard Navigation**: Navigate through repositories (↑/↓) and workflow runs (←/→) with vim-like keys (hjkl) or arrow keys
+- **Manual Refresh**: Press 'f' to force immediate refresh and reset the countdown timer
 - **Contextual Actions**: Open workflow runs in browser or view logs directly from the UI
 - **Multi-Repository Support**: Monitor up to 50 repositories simultaneously
 - **Status Indicators**: Visual icons for workflow states (✅ success, ❌ failure, ⏳ queued, 🔄 in progress)
@@ -137,9 +138,10 @@ organization/repo2         (30s): ❌✅✅✅
 
 Navigation:
 - `j` / `↓` - Move down to next repository
-- `k` / `↑` - Move up to previous repository  
+- `k` / `↑` - Move up to previous repository
 - `l` / `→` - Move right to next workflow run (on the same repository)
 - `h` / `←` - Move left to previous workflow run (on the same repository)
+- `f` - Force immediate refresh and reset countdown timer
 - `Enter` - Open contextual menu for the selected workflow run
 - `Esc` - Close menu / exit
 - `q` - Quit application

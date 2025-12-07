@@ -9,7 +9,7 @@ use std::error::Error;
 use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use ctrlc;
+use tokio::signal;
 use ratatui::{
     backend::CrosstermBackend,
     Terminal,
@@ -19,7 +19,7 @@ use crossterm::{
     terminal::{enable_raw_mode, disable_raw_mode, Clear},
     execute,
 };
-use tokio::sync::mpsc;
+
 
 #[derive(Parser)]
 #[command(name = "nighthub")]
@@ -29,17 +29,13 @@ struct Args {
     fixed: bool,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<(), Box<dyn Error>> {
     let _args = Args::parse();
     setup_logging();
 
     let settings = Settings::new()?;
-    let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
-    let mut app_state = AppState::new_with_channel(settings, ui_tx).await?;
-    
-    // Initial refresh to populate workflow runs
-    app_state.refresh().await?;
+    let mut app_state = AppState::new(settings).await?;
 
     enable_raw_mode()?;
     let backend = CrosstermBackend::new(std::io::stdout());
@@ -47,30 +43,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     execute!(std::io::stdout(), Clear(crossterm::terminal::ClearType::All))?;
 
-    let mut workflow_list = WorkflowListComponent::new();
+    let workflow_list = WorkflowListComponent::new();
 
     let should_exit = Arc::new(AtomicBool::new(false));
     let should_exit_clone = Arc::clone(&should_exit);
 
-    ctrlc::set_handler(move || {
-        should_exit_clone.store(true, Ordering::Relaxed);
-    }).expect("Error setting Ctrl+C handler");
+    // Set up graceful shutdown signal handler
+    let shutdown_handle = tokio::spawn(async move {
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to setup SIGTERM handler");
+        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
+            .expect("Failed to setup SIGINT handler");
+        
+        tokio::select! {
+            _ = sigterm.recv() => {
+                should_exit_clone.store(true, Ordering::Relaxed);
+            }
+            _ = sigint.recv() => {
+                should_exit_clone.store(true, Ordering::Relaxed);
+            }
+        }
+    });
 
     loop {
         if should_exit.load(Ordering::Relaxed) {
             break;
         }
 
-        // Handle UI events from background tasks
-        while let Ok(ui_event) = ui_rx.try_recv() {
-            app_state.handle_ui_event(ui_event);
-        }
-
         // Auto refresh when timer reaches 0
         if app_state.seconds_until_refresh() == 0 {
-            if let Err(e) = app_state.refresh().await {
-                eprintln!("Auto refresh error: {}", e);
-            }
+            let _ = app_state.refresh(false).await;
         }
 
         terminal.draw(|f| {
@@ -101,66 +103,52 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // Poll for events with timeout to keep UI responsive and update timer
         if crossterm::event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                // Only handle key press events, not repeat/release events
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => break,
                         KeyCode::Char('q') => break,
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if app_state.popup.is_none() {
-                            let repo_names: Vec<String> = app_state.repositories.iter().map(|r| r.full_name.clone()).collect();
-                            workflow_list.next_run(&app_state.workflow_runs, &repo_names);
-                            // Sync app_state with workflow_list selection
-                            app_state.selected_repo = Some(workflow_list.selected_repo_index);
-                            app_state.selected_run = Some(workflow_list.selected_run_index);
-                        } else if app_state.popup == Some(nighthub::ui::app::PopupType::ContextMenu) {
-                            app_state.context_menu.next();
-                        }
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        if app_state.popup.is_none() {
-                            let repo_names: Vec<String> = app_state.repositories.iter().map(|r| r.full_name.clone()).collect();
-                            workflow_list.previous_run(&app_state.workflow_runs, &repo_names);
-                            // Sync app_state with workflow_list selection
-                            app_state.selected_repo = Some(workflow_list.selected_repo_index);
-                            app_state.selected_run = Some(workflow_list.selected_run_index);
-                        } else if app_state.popup == Some(nighthub::ui::app::PopupType::ContextMenu) {
-                            app_state.context_menu.previous();
-                        }
-                    }
-                    KeyCode::Char('l') | KeyCode::Right => {
-                        if app_state.popup.is_none() {
-                            workflow_list.next_repo(app_state.repositories.len());
-                            // Sync app_state with workflow_list selection
-                            app_state.selected_repo = Some(workflow_list.selected_repo_index);
-                            app_state.selected_run = Some(workflow_list.selected_run_index);
-                        }
-                    }
-                    KeyCode::Char('h') | KeyCode::Left => {
-                        if app_state.popup.is_none() {
-                            workflow_list.previous_repo(app_state.repositories.len());
-                            // Sync app_state with workflow_list selection
-                            app_state.selected_repo = Some(workflow_list.selected_repo_index);
-                            app_state.selected_run = Some(workflow_list.selected_run_index);
-                        }
-                    }
-                    KeyCode::Char('r') => {
-                        if app_state.popup.is_none() {
-                            // Force immediate refresh (non-blocking)
-                            if let Err(e) = app_state.refresh().await {
-                                eprintln!("Error triggering refresh: {}", e);
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            if app_state.popup.is_none() {
+                                app_state.next_repo();
+                            } else if let Some(nighthub::ui::app::PopupType::ContextMenu) = app_state.popup {
+                                app_state.context_menu.next();
                             }
                         }
-                    }
-                    KeyCode::Enter => app_state.handle_key("enter"),
-                    KeyCode::Esc => app_state.handle_key("esc"),
-                    _ => {}
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            if app_state.popup.is_none() {
+                                app_state.previous_repo();
+                            } else if let Some(nighthub::ui::app::PopupType::ContextMenu) = app_state.popup {
+                                app_state.context_menu.previous();
+                            }
+                        }
+                        KeyCode::Char('l') | KeyCode::Right => {
+                            if app_state.popup.is_none() {
+                                app_state.next_run();
+                            }
+                        }
+                        KeyCode::Char('h') | KeyCode::Left => {
+                            if app_state.popup.is_none() {
+                                app_state.previous_run();
+                            }
+                        }
+                        KeyCode::Char('f') => {
+                            if app_state.popup.is_none() {
+                                // Force immediate refresh of ALL repos (manual refresh)
+                                let _ = app_state.refresh(true).await;
+                            }
+                        }
+                        KeyCode::Enter => app_state.handle_key("enter"),
+                        KeyCode::Esc => app_state.handle_key("esc"),
+                        _ => {}
                     }
                 }
             }
         }
     }
 
+    // Abort the shutdown handler task
+    shutdown_handle.abort();
+    
     disable_raw_mode()?;
     Ok(())
 }

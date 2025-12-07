@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use crate::github::models::{WorkflowRun, RepositoryStatus};
+use crate::github::models::{WorkflowRun, WorkflowConclusion};
 
 #[derive(Debug, Clone)]
 pub struct RepositoryState {
-    pub config: crate::config::RepositoryConfig,
+    pub config: crate::config::settings::RepositoryConfig,
     pub workflow_runs: Vec<WorkflowRun>,
     pub status: RepositoryStatus,
     pub last_updated: Option<DateTime<Utc>>,
@@ -19,7 +19,7 @@ pub enum RepositoryStatus {
 }
 
 impl RepositoryState {
-    pub fn new(config: crate::config::RepositoryConfig) -> Self {
+    pub fn new(config: crate::config::settings::RepositoryConfig) -> Self {
         Self {
             config,
             workflow_runs: Vec::new(),
@@ -36,8 +36,8 @@ impl RepositoryState {
         // Update status based on recent runs
         if let Some(last_run) = self.workflow_runs.first() {
             self.status = match last_run.conclusion {
-                Some(crate::github::WorkflowConclusion::Success) => RepositoryStatus::Healthy,
-                Some(crate::github::WorkflowConclusion::Failure) => RepositoryStatus::Error,
+                Some(WorkflowConclusion::Success) => RepositoryStatus::Healthy,
+                Some(WorkflowConclusion::Failure) => RepositoryStatus::Error,
                 Some(_) => RepositoryStatus::Warning,
                 None => RepositoryStatus::Unknown,
             };
@@ -47,14 +47,14 @@ impl RepositoryState {
     }
 
     pub fn has_recent_failure(&self) -> bool {
-        self.workflow_runs.iter().any(|run| run.conclusion == Some(crate::github::WorkflowConclusion::Failure))
+        self.workflow_runs.iter().any(|run| run.conclusion == Some(WorkflowConclusion::Failure))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::RepositoryConfig;
+    use crate::config::settings::RepositoryConfig;
     use crate::github::models::{WorkflowRun, WorkflowStatus, WorkflowConclusion};
     use chrono::Utc;
 
@@ -104,15 +104,15 @@ mod tests {
         let mut state = RepositoryState::new(config);
         
         let runs = vec![
-            create_test_workflow_run(1, Some(WorkflowConclusion::Success)),
-            create_test_workflow_run(2, Some(WorkflowConclusion::Failure)),
+            create_test_workflow_run(1, Some(WorkflowConclusion::Failure)),
+            create_test_workflow_run(2, Some(WorkflowConclusion::Success)),
         ];
         
         state.update_runs(runs);
         
         assert_eq!(state.workflow_runs.len(), 2);
         assert!(state.last_updated.is_some());
-        assert_eq!(state.status, RepositoryStatus::Error); // Last run is failure
+        assert_eq!(state.status, RepositoryStatus::Error); // Last run is failure (first element)
     }
 
     #[test]

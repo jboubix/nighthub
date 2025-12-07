@@ -8,3 +8,9 @@ pub fn setup_logging() {
     // Simple logging setup without external dependencies
     env_logger::init();
 }
+
+pub async fn setup_async_logging() {
+    // Async logging setup for better performance
+    // This can be extended with a proper async logging library if needed
+    env_logger::init();
+}

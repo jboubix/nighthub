@@ -10,7 +10,6 @@ pub struct RepositoryConfig {
     pub branch: Option<String>,
     pub workflows: Option<Vec<String>>,
     pub enabled: bool,
-    pub refresh_interval_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -183,7 +182,6 @@ impl Settings {
             branch: None,
             workflows: None,
             enabled: true,
-            refresh_interval_seconds: None,
         })
     }
 
@@ -202,31 +200,6 @@ impl Settings {
             for repo_entry in repos_str.split(',') {
                 let trimmed = repo_entry.trim();
                 if !trimmed.is_empty() {
-                    if let Some((repo_part, interval_part)) = trimmed.split_once(':') {
-                        // Parse with override: org/repo:30
-                        let parts: Vec<&str> = repo_part.split('/').collect();
-                        if parts.len() != 2 {
-                            return Err(ConfigError::Message(format!("Invalid repository format in REPOS: {}. Expected owner/repo:interval.", trimmed)));
-                        }
-                        
-                        let interval = interval_part.parse::<u64>()
-                            .map_err(|_| ConfigError::Message(format!("Invalid refresh interval in REPOS: {}", interval_part)))?;
-                        
-                        // Validate interval bounds (5 seconds to 2 hours)
-                        if !(5..=7200).contains(&interval) {
-                            return Err(ConfigError::Message(format!("Refresh interval must be between 5 and 7200 seconds in REPOS: {}", trimmed)));
-                        }
-                        
-                        repos.push(RepositoryConfig {
-                            owner: parts[0].to_string(),
-                            name: parts[1].to_string(),
-                            branch: None,
-                            workflows: None,
-                            enabled: true,
-                            refresh_interval_seconds: Some(interval),
-                        });
-                    } else {
-                        // Parse without override: org/repo
                         let parts: Vec<&str> = trimmed.split('/').collect();
                         if parts.len() != 2 {
                             return Err(ConfigError::Message(format!("Invalid repository format in REPOS: {}. Expected owner/repo.", trimmed)));
@@ -238,9 +211,7 @@ impl Settings {
                             branch: None,
                             workflows: None,
                             enabled: true,
-                            refresh_interval_seconds: None,
                         });
-                    }
                 }
             }
 
@@ -250,9 +221,8 @@ impl Settings {
             repos
         } else {
             // No REPOS env var, detect from current directory
-            let mut repo_config = Self::detect_current_repository()?;
-            repo_config.refresh_interval_seconds = None; // Use tiered refresh for auto-detected repos
-            vec![repo_config]
+        let repo_config = Self::detect_current_repository()?;
+        vec![repo_config]
         };
 
         // Apply defaults
@@ -332,37 +302,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_repos_with_override() {
-        unsafe { env::set_var("GITHUB_TOKEN", "ghp_1234567890abcdef1234567890abcdef12345678") };
-        unsafe { env::set_var("REPOS", "owner1/repo1:30,owner2/repo2:300") };
-        let result = Settings::new();
-        
-        assert!(result.is_ok());
-        let settings = result.unwrap();
-        assert_eq!(settings.repositories.len(), 2);
-        assert_eq!(settings.repositories[0].refresh_interval_seconds, Some(30));
-        assert_eq!(settings.repositories[1].refresh_interval_seconds, Some(300));
-        
-        unsafe { env::remove_var("GITHUB_TOKEN") };
-        unsafe { env::remove_var("REPOS") };
-    }
 
     #[test]
-    fn test_parse_repos_mixed_formats() {
-        unsafe { env::set_var("GITHUB_TOKEN", "ghp_1234567890abcdef1234567890abcdef12345678") };
-        unsafe { env::set_var("REPOS", "owner1/repo1:60,owner2/repo2,owner3/repo3:7200") };
-        let result = Settings::new();
-        
-        assert!(result.is_ok());
-        let settings = result.unwrap();
-        assert_eq!(settings.repositories.len(), 3);
-        assert_eq!(settings.repositories[0].refresh_interval_seconds, Some(60));
-        assert_eq!(settings.repositories[1].refresh_interval_seconds, None);
-        assert_eq!(settings.repositories[2].refresh_interval_seconds, Some(7200));
-        
-        unsafe { env::remove_var("GITHUB_TOKEN") };
-        unsafe { env::remove_var("REPOS") };
-    }
 
     #[test]
     fn test_parse_repos_invalid_format() {
@@ -387,26 +328,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_repos_interval_out_of_bounds() {
-        unsafe { env::set_var("GITHUB_TOKEN", "ghp_1234567890abcdef1234567890abcdef12345678") };
-        unsafe { env::set_var("REPOS", "owner/repo:3") };
-        let result = Settings::new();
-        
-        assert!(result.is_err());
-        let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("Refresh interval must be between 5 and 7200 seconds"));
-    }
 
     #[test]
-    fn test_parse_repos_interval_too_high() {
-        unsafe { env::set_var("GITHUB_TOKEN", "ghp_1234567890abcdef1234567890abcdef12345678") };
-        unsafe { env::set_var("REPOS", "owner/repo:7201") };
-        let result = Settings::new();
-        
-        assert!(result.is_err());
-        let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("Refresh interval must be between 5 and 7200 seconds"));
-    }
 
     #[test]
     fn test_parse_repos_empty_entries() {

@@ -35,13 +35,13 @@ impl WorkflowListComponent {
 
         // Add timer information
         let timer_text = if is_refreshing {
-            // Simple spinner frames
+            // Simple spinner frames with refresh emoji
             let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
             let frame_index = (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() / 100) as usize % spinner_frames.len();
-            format!("{} Refreshing...", spinner_frames[frame_index])
+            format!("🔄 {} Refreshing...", spinner_frames[frame_index])
         } else if seconds_until_refresh < 60 {
             format!("Refresh in {}s", seconds_until_refresh)
         } else {

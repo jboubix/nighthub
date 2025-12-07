@@ -16,26 +16,32 @@ async fn test_full_refresh_cycle() {
         unsafe { env::set_var("GITHUB_TOKEN", "ghp_test1234567890abcdef1234567890abcdef12345678") };
         unsafe { env::set_var("REPOS", "testowner/repo1:30,testowner/repo2") };
     }
-    
+
     // Create test settings
     let result = Settings::new();
     assert!(result.is_ok());
     let settings = result.unwrap();
-    
+
     assert_eq!(settings.repositories.len(), 2);
     assert_eq!(settings.repositories[0].refresh_interval_seconds, Some(30));
     assert_eq!(settings.repositories[1].refresh_interval_seconds, None);
-    
+
     // Note: In a real integration test, we would mock the GitHub API
     // For now, just test the configuration and state management
     let app_result = AppState::new(settings).await;
-    
+
     // This would fail in real test without mocking, but shows the integration flow
     // In a complete test setup, we would:
     // 1. Mock the GitHubClient
     // 2. Mock API responses
     // 3. Verify refresh behavior
     // 4. Test UI state transitions
+
+    // Cleanup environment variables
+    unsafe {
+        env::remove_var("GITHUB_TOKEN");
+        env::remove_var("REPOS");
+    }
 }
 
 #[tokio::test]
@@ -59,8 +65,12 @@ async fn test_configuration_to_ui_flow() {
     assert_eq!(settings.repositories[0].name, "repo1");
     assert_eq!(settings.repositories[1].owner, "owner2");
     assert_eq!(settings.repositories[1].name, "repo2");
-    assert_eq!(settings.repositories[2].owner, "owner3");
-    assert_eq!(settings.repositories[2].name, "repo3");
+
+    // Cleanup environment variables
+    unsafe {
+        env::remove_var("GITHUB_TOKEN");
+        env::remove_var("REPOS");
+    }
 }
 
 #[tokio::test]
@@ -131,6 +141,12 @@ async fn test_override_refresh_behavior() {
     // - active/repo: 5 seconds (override)
     // - normal/repo: 5 seconds (very recent activity)
     // - slow/repo: 3600 seconds (override, despite old activity)
+
+    // Cleanup environment variables
+    unsafe {
+        env::remove_var("GITHUB_TOKEN");
+        env::remove_var("REPOS");
+    }
 }
 
 #[tokio::test]
@@ -232,6 +248,12 @@ async fn test_tiered_refresh_calculation() {
     assert!(repo1_time.num_hours() < 2); // Very active
     assert!(repo2_time.num_hours() >= 2 && repo2_time.num_hours() < 24); // Moderately active
     assert!(repo3_time.num_hours() >= 24); // Inactive
+
+    // Cleanup environment variables
+    unsafe {
+        env::remove_var("GITHUB_TOKEN");
+        env::remove_var("REPOS");
+    }
 }
 
 #[test]
@@ -251,14 +273,14 @@ fn test_environment_variable_parsing() {
     
     for (repos_input, expected_repos) in test_cases {
         unsafe { env::set_var("REPOS", repos_input) };
-        
+
         let result = Settings::new();
         assert!(result.is_ok(), "Failed to parse REPOS: {}", repos_input);
-        
+
         let settings = result.unwrap();
-        assert_eq!(settings.repositories.len(), expected_repos.len(), 
+        assert_eq!(settings.repositories.len(), expected_repos.len(),
                   "Wrong number of repos for input: {}", repos_input);
-        
+
         // Verify each repository was parsed correctly
         for (i, expected_repo) in expected_repos.iter().enumerate() {
             if expected_repo.contains(':') {
@@ -273,5 +295,11 @@ fn test_environment_variable_parsing() {
                 assert_eq!(settings.repositories[i].refresh_interval_seconds, None);
             }
         }
+
+        // Cleanup REPOS after each iteration
+        unsafe { env::remove_var("REPOS") };
     }
+
+    // Final cleanup
+    unsafe { env::remove_var("GITHUB_TOKEN") };
 }

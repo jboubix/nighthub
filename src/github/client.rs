@@ -6,6 +6,7 @@ use secrecy::SecretString;
 use serde::Deserialize;
 use chrono::{DateTime, Utc};
 use async_trait::async_trait;
+use std::time::Duration;
 
 #[async_trait]
 pub trait GitHubApiClient {
@@ -78,6 +79,48 @@ impl GithubClient {
         Ok(GithubClient { client, settings })
     }
 
+    async fn retry_with_backoff<F, T, E>(&self, operation: F) -> Result<T, E>
+    where
+        F: Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, E>> + Send>>,
+        E: std::fmt::Display,
+    {
+        let mut delay = Duration::from_secs(1);
+        let max_retries = self.settings.monitoring.max_retries;
+        
+        for attempt in 0..=max_retries {
+            match operation().await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    if attempt == max_retries {
+                        return Err(e);
+                    }
+                    
+                    // Check if error is retryable (rate limit, server error, etc.)
+                    let error_str = e.to_string();
+                    let is_retryable = error_str.contains("rate limit") 
+                        || error_str.contains("timeout")
+                        || error_str.contains("connection")
+                        || error_str.contains("502")
+                        || error_str.contains("503")
+                        || error_str.contains("504");
+                    
+                    if !is_retryable {
+                        return Err(e);
+                    }
+                    
+                    // Exponential backoff with jitter
+                    let jitter = (fastrand::f64() * 0.1) * delay.as_secs_f64();
+                    let backoff_delay = delay + Duration::from_secs_f64(jitter);
+                    
+                    tokio::time::sleep(backoff_delay).await;
+                    delay = std::cmp::min(delay * 2, Duration::from_secs(self.settings.monitoring.retry_delay_seconds * 4));
+                }
+            }
+        }
+        
+        unreachable!()
+    }
+
     #[cfg(test)]
     pub fn new_with_client(settings: Settings, client: Box<dyn GitHubApiClient + Send + Sync>) -> Self {
         GithubClient { 
@@ -96,50 +139,66 @@ impl GithubClient {
         owner: &str,
         repo: &str,
     ) -> Result<Vec<WorkflowRun>, AppError> {
-        let route = format!("/repos/{}/{}/actions/runs", owner, repo);
-        let response = self.client
-            .get_workflow_runs(&route)
-            .await?;
+        let client = self.client.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let workflow_runs_per_repo = self.settings.monitoring.workflow_runs_per_repo;
+        
+        self.retry_with_backoff(move || {
+            let client = client.clone();
+            let owner = owner.clone();
+            let repo = repo.clone();
+            let route = format!("/repos/{}/{}/actions/runs", owner, repo);
+            
+            Box::pin(async move {
+                // Add timeout to prevent hanging requests
+                let response = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    client.get_workflow_runs(&route)
+                ).await
+                .map_err(|_| AppError::GithubError("Request timeout after 30 seconds".to_string()))??;
 
-        let mut all_runs: Vec<WorkflowRun> = response.workflow_runs
-            .into_iter()
-            .map(|raw_run| {
-                let status = match raw_run.status.as_str() {
-                    "queued" => WorkflowStatus::Queued,
-                    "in_progress" => WorkflowStatus::InProgress,
-                    "completed" => WorkflowStatus::Completed,
-                    _ => WorkflowStatus::Queued,
-                };
+                let mut all_runs: Vec<WorkflowRun> = response.workflow_runs
+                    .into_iter()
+                    .map(|raw_run| {
+                        let status = match raw_run.status.as_str() {
+                            "queued" => WorkflowStatus::Queued,
+                            "in_progress" => WorkflowStatus::InProgress,
+                            "completed" => WorkflowStatus::Completed,
+                            _ => WorkflowStatus::Queued,
+                        };
 
-                let conclusion = raw_run.conclusion.as_ref().map(|c| match c.as_str() {
-                    "success" => WorkflowConclusion::Success,
-                    "failure" => WorkflowConclusion::Failure,
-                    "cancelled" => WorkflowConclusion::Cancelled,
-                    "skipped" => WorkflowConclusion::Skipped,
-                    "timed_out" => WorkflowConclusion::TimedOut,
-                    _ => WorkflowConclusion::Skipped,
-                });
+                        let conclusion = raw_run.conclusion.as_ref().map(|c| match c.as_str() {
+                            "success" => WorkflowConclusion::Success,
+                            "failure" => WorkflowConclusion::Failure,
+                            "cancelled" => WorkflowConclusion::Cancelled,
+                            "skipped" => WorkflowConclusion::Skipped,
+                            "timed_out" => WorkflowConclusion::TimedOut,
+                            _ => WorkflowConclusion::Skipped,
+                        });
 
-                WorkflowRun {
-                    id: raw_run.id,
-                    name: raw_run.name,
-                    status,
-                    conclusion,
-                    created_at: raw_run.created_at,
-                    updated_at: raw_run.updated_at,
-                    branch: raw_run.head_branch.unwrap_or_default(),
-                    commit_sha: raw_run.head_sha,
-                    actor: raw_run.actor.login,
-                    html_url: raw_run.html_url,
-                    logs_url: raw_run.logs_url,
-                }
+                        WorkflowRun {
+                            id: raw_run.id,
+                            name: raw_run.name,
+                            status,
+                            conclusion,
+                            created_at: raw_run.created_at,
+                            updated_at: raw_run.updated_at,
+                            branch: raw_run.head_branch.unwrap_or_default(),
+                            commit_sha: raw_run.head_sha,
+                            actor: raw_run.actor.login,
+                            html_url: raw_run.html_url,
+                            logs_url: raw_run.logs_url,
+                        }
+                    })
+                    .collect();
+
+                all_runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                all_runs.truncate(workflow_runs_per_repo);
+
+                Ok(all_runs)
             })
-            .collect();
-
-        all_runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        all_runs.truncate(self.settings.monitoring.workflow_runs_per_repo);
-
-        Ok(all_runs)
+        }).await
     }
 
     pub async fn fetch_repository_info(
@@ -147,19 +206,34 @@ impl GithubClient {
         owner: &str,
         repo: &str,
     ) -> Result<Repository, AppError> {
-        let route = format!("/repos/{}/{}", owner, repo);
-        let repo_info = self.client
-            .get_repository(&route)
-            .await?;
+        let client = self.client.clone();
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        
+        self.retry_with_backoff(move || {
+            let client = client.clone();
+            let owner = owner.clone();
+            let repo = repo.clone();
+            let route = format!("/repos/{}/{}", owner, repo);
+            
+            Box::pin(async move {
+                // Add timeout to prevent hanging requests
+                let repo_info = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    client.get_repository(&route)
+                ).await
+                .map_err(|_| AppError::GithubError("Request timeout after 30 seconds".to_string()))??;
 
-        Ok(Repository {
-            id: repo_info.id,
-            name: repo_info.name.clone(),
-            owner: repo_info.owner.login,
-            full_name: repo_info.full_name,
-            html_url: repo_info.html_url,
-            default_branch: repo_info.default_branch,
-        })
+                Ok(Repository {
+                    id: repo_info.id,
+                    name: repo_info.name.clone(),
+                    owner: repo_info.owner.login,
+                    full_name: repo_info.full_name,
+                    html_url: repo_info.html_url,
+                    default_branch: repo_info.default_branch,
+                })
+            })
+        }).await
     }
 
     pub async fn fetch_repositories(&self) -> Result<Vec<Repository>, AppError> {

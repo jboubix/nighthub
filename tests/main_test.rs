@@ -157,6 +157,7 @@ fn create_mock_app_state() -> AppState {
         last_repo_refresh_times: HashMap::new(),
             ui_tx: tokio::sync::mpsc::unbounded_channel().0,
         seconds_until_refresh: 60,
+        is_refreshing: false,
     }
 }
 
@@ -542,6 +543,7 @@ mod main_application_tests {
             last_repo_refresh_times: HashMap::new(),
         ui_tx: tokio::sync::mpsc::unbounded_channel().0,
             seconds_until_refresh: 60,
+            is_refreshing: false,
         };
         
         let mut workflow_list = WorkflowListComponent::new();
@@ -597,47 +599,42 @@ mod main_application_tests {
     }
 
     #[tokio::test]
-    async fn test_manual_refresh_with_r_key() {
-        use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
-        
+    async fn test_manual_refresh_with_f_key() {
         let mut app_state = create_mock_app_state();
-        
-        // Simulate 'r' key press when no popup is open
-        let r_key_event = Event::Key(KeyEvent {
-            code: KeyCode::Char('r'),
-            modifiers: crossterm::event::KeyModifiers::NONE,
-            kind: KeyEventKind::Press,
-            state: crossterm::event::KeyEventState::NONE,
-        });
-        
+
+        // Set initial timer to some value
+        app_state.seconds_until_refresh = 30;
+
         // Verify that no popup is open (condition for refresh)
         assert!(app_state.popup.is_none());
-        
-        // The 'r' key should trigger refresh when popup is none
-        // This test verifies the condition is met for refresh to occur
-        assert!(true); // Placeholder - actual refresh testing would require mocking GitHub client
+
+        // Simulate calling reset_refresh_timer (what happens when 'f' is pressed)
+        app_state.reset_refresh_timer();
+
+        // Timer should be reset to maximum refresh interval (300 seconds for repo2 override)
+        assert_eq!(app_state.seconds_until_refresh, 300);
     }
 
 
 
     #[tokio::test]
-    async fn test_r_key_ignored_when_popup_open() {
+    async fn test_f_key_ignored_when_popup_open() {
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
         
         let mut app_state = create_mock_app_state();
         app_state.open_context_menu(); // Open a popup
         
-        // Simulate 'r' key press when popup is open
-        let r_key_event = Event::Key(KeyEvent {
-            code: KeyCode::Char('r'),
+        // Simulate 'f' key press when popup is open
+        let f_key_event = Event::Key(KeyEvent {
+            code: KeyCode::Char('f'),
             modifiers: crossterm::event::KeyModifiers::NONE,
             kind: KeyEventKind::Press,
             state: crossterm::event::KeyEventState::NONE,
         });
-        
-        // When popup is open, 'r' key should be ignored
+
+        // When popup is open, 'f' key should be ignored
         assert!(app_state.popup.is_some());
-        
+
         // Verify that refresh would not be triggered when popup is open
         // This test verifies the condition prevents refresh
         assert!(true); // Placeholder - actual behavior testing

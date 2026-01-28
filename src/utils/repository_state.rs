@@ -65,7 +65,6 @@ mod tests {
             branch: None,
             workflows: None,
             enabled: true,
-            refresh_interval_seconds: None,
         }
     }
 

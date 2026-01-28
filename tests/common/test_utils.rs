@@ -9,18 +9,6 @@ pub fn create_test_repository_config(owner: &str, name: &str) -> RepositoryConfi
         branch: None,
         workflows: None,
         enabled: true,
-        refresh_interval_seconds: None,
-    }
-}
-
-pub fn create_test_repository_config_with_override(owner: &str, name: &str, override_secs: u64) -> RepositoryConfig {
-    RepositoryConfig {
-        owner: owner.to_string(),
-        name: name.to_string(),
-        branch: None,
-        workflows: None,
-        enabled: true,
-        refresh_interval_seconds: Some(override_secs),
     }
 }
 

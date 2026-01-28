@@ -7,7 +7,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 pub struct WorkflowListComponent {
     pub selected_repo_index: usize,
@@ -29,19 +30,25 @@ impl WorkflowListComponent {
         workflow_runs: &HashMap<String, Vec<WorkflowRun>>,
         repo_names: &[String],
         seconds_until_refresh: u64,
-        is_refreshing: bool,
+        refreshing_repos: &Arc<RwLock<HashSet<String>>>,
     ) {
         let mut lines = vec![];
 
+        // Get current refreshing repos
+        let refreshing_set = refreshing_repos.read().unwrap();
+        let is_any_refreshing = !refreshing_set.is_empty();
+        
+
+        
         // Add timer information
-        let timer_text = if is_refreshing {
+        let timer_text = if is_any_refreshing {
             // Simple spinner frames with refresh emoji
             let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
             let frame_index = (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() / 100) as usize % spinner_frames.len();
-            format!("🔄 {} Refreshing...", spinner_frames[frame_index])
+            format!("🔄 {} Refreshing {} repos...", spinner_frames[frame_index], refreshing_set.len())
         } else if seconds_until_refresh < 60 {
             format!("Refresh in {}s", seconds_until_refresh)
         } else {
@@ -55,9 +62,12 @@ impl WorkflowListComponent {
         // Add workflow runs for each repository
         for (repo_idx, repo_name) in repo_names.iter().enumerate() {
             if let Some(runs) = workflow_runs.get(repo_name) {
+                let is_refreshing = refreshing_set.contains(repo_name);
+                let refresh_indicator = if is_refreshing { "🔄 " } else { "" };
+                
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!("{}: {}", repo_name, runs.len()),
+                        format!("{}{}: {}", refresh_indicator, repo_name, runs.len()),
                         Style::default().fg(if repo_idx == self.selected_repo_index {
                             Color::Green
                         } else {
@@ -294,6 +304,7 @@ mod tests {
         let component = create_test_workflow_list();
         let runs = create_test_workflow_runs();
         let repo_names = vec!["test/repo".to_string()];
+        let refreshing_repos = Arc::new(RwLock::new(HashSet::new()));
         
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -301,25 +312,29 @@ mod tests {
         
         // Test with different timer values
         let area = frame.area();
-        component.render(&mut frame, area, &runs, &repo_names, 0, false);
+        component.render(&mut frame, area, &runs, &repo_names, 0, &refreshing_repos);
         
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut frame = terminal.get_frame();
         let area = frame.area();
-        component.render(&mut frame, area, &runs, &repo_names, 30, false);
+        component.render(&mut frame, area, &runs, &repo_names, 30, &refreshing_repos);
         
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut frame = terminal.get_frame();
         let area = frame.area();
-        component.render(&mut frame, area, &runs, &repo_names, 120, false);
+        component.render(&mut frame, area, &runs, &repo_names, 120, &refreshing_repos);
         
         // Test refreshing state
+        let mut refreshing = refreshing_repos.write().unwrap();
+        refreshing.insert("test/repo".to_string());
+        drop(refreshing);
+        
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut frame = terminal.get_frame();
         let area = frame.area();
-        component.render(&mut frame, area, &runs, &repo_names, 0, true);
+        component.render(&mut frame, area, &runs, &repo_names, 0, &refreshing_repos);
     }
 }

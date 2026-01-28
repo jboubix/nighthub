@@ -292,18 +292,14 @@ mod tests {
         assert_eq!(settings.repositories.len(), 2);
         assert_eq!(settings.repositories[0].owner, "owner1");
         assert_eq!(settings.repositories[0].name, "repo1");
-        assert_eq!(settings.repositories[0].refresh_interval_seconds, None);
+        // Note: refresh_interval_seconds field no longer exists in RepositoryConfig
         assert_eq!(settings.repositories[1].owner, "owner2");
         assert_eq!(settings.repositories[1].name, "repo2");
-        assert_eq!(settings.repositories[1].refresh_interval_seconds, None);
+        // Note: refresh_interval_seconds field no longer exists in RepositoryConfig
         
         unsafe { env::remove_var("GITHUB_TOKEN") };
         unsafe { env::remove_var("REPOS") };
     }
-
-    #[test]
-
-    #[test]
 
     #[test]
     fn test_parse_repos_invalid_format() {
@@ -317,19 +313,20 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_repos_invalid_interval() {
+    fn test_parse_repos_with_colon_in_name() {
         unsafe { env::set_var("GITHUB_TOKEN", "ghp_1234567890abcdef1234567890abcdef12345678") };
         unsafe { env::set_var("REPOS", "owner/repo:invalid") };
         let result = Settings::new();
         
-        assert!(result.is_err());
-        let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("Invalid refresh interval"));
+        assert!(result.is_ok());
+        let settings = result.unwrap();
+        assert_eq!(settings.repositories.len(), 1);
+        assert_eq!(settings.repositories[0].owner, "owner");
+        assert_eq!(settings.repositories[0].name, "repo:invalid");
+        
+        unsafe { env::remove_var("GITHUB_TOKEN") };
+        unsafe { env::remove_var("REPOS") };
     }
-
-    #[test]
-
-    #[test]
 
     #[test]
     fn test_parse_repos_empty_entries() {
@@ -355,7 +352,7 @@ mod tests {
         let settings = result.unwrap();
         assert_eq!(settings.repositories.len(), 2);
         assert_eq!(settings.repositories[0].owner, "owner1");
-        assert_eq!(settings.repositories[1].refresh_interval_seconds, Some(60));
+        // Note: refresh_interval_seconds field no longer exists in RepositoryConfig
         
         unsafe { env::remove_var("GITHUB_TOKEN") };
         unsafe { env::remove_var("REPOS") };

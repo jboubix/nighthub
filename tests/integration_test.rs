@@ -23,8 +23,7 @@ async fn test_full_refresh_cycle() {
     let settings = result.unwrap();
 
     assert_eq!(settings.repositories.len(), 2);
-    assert_eq!(settings.repositories[0].refresh_interval_seconds, Some(30));
-    assert_eq!(settings.repositories[1].refresh_interval_seconds, None);
+    // Note: refresh_interval_seconds field no longer exists in RepositoryConfig
 
     // Note: In a real integration test, we would mock the GitHub API
     // For now, just test the configuration and state management
@@ -56,9 +55,7 @@ async fn test_configuration_to_ui_flow() {
     
     // Verify configuration parsing
     assert_eq!(settings.repositories.len(), 3);
-    assert_eq!(settings.repositories[0].refresh_interval_seconds, Some(60));
-    assert_eq!(settings.repositories[1].refresh_interval_seconds, Some(300));
-    assert_eq!(settings.repositories[2].refresh_interval_seconds, None);
+    // Note: refresh_interval_seconds field no longer exists in RepositoryConfig
     
     // Verify repository configurations
     assert_eq!(settings.repositories[0].owner, "owner1");
@@ -287,12 +284,12 @@ fn test_environment_variable_parsing() {
                 let parts: Vec<&str> = expected_repo.split(':').collect();
                 assert_eq!(settings.repositories[i].owner, parts[0].split('/').collect::<Vec<&str>>()[0]);
                 assert_eq!(settings.repositories[i].name, parts[0].split('/').collect::<Vec<&str>>()[1]);
-                assert_eq!(settings.repositories[i].refresh_interval_seconds, Some(parts[1].parse().unwrap()));
+                // Note: refresh_interval_seconds field no longer exists in RepositoryConfig
             } else {
                 let parts: Vec<&str> = expected_repo.split('/').collect();
                 assert_eq!(settings.repositories[i].owner, parts[0]);
                 assert_eq!(settings.repositories[i].name, parts[1]);
-                assert_eq!(settings.repositories[i].refresh_interval_seconds, None);
+                // Note: refresh_interval_seconds field no longer exists in RepositoryConfig
             }
         }
 

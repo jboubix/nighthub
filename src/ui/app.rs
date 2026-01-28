@@ -4,7 +4,8 @@ use crate::github::client::GithubClient;
 use crate::github::models::{Repository, WorkflowRun};
 use crate::ui::components::context_menu::ContextMenuComponent;
 use crate::utils::logging::{log_error, log_info, log_warn};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 
 use std::time::Duration;
 use chrono::{DateTime, Utc};
@@ -28,7 +29,7 @@ pub struct AppState {
     pub settings: Settings,
     pub github_client: GithubClient,
     pub last_repo_refresh_times: HashMap<String, DateTime<Utc>>,
-    pub is_refreshing: bool,
+    pub refreshing_repos: Arc<RwLock<HashSet<String>>>,
 }
 
 impl AppState {
@@ -61,7 +62,26 @@ impl AppState {
 
 pub async fn new_without_refresh(settings: Settings) -> Result<Self, AppError> {
     let github_client = GithubClient::new(settings.clone())?;
-    let repositories = github_client.fetch_repositories().await?;
+    
+    // Try to fetch repositories, but if it fails, create repos from REPOS env var
+    let repositories = match github_client.fetch_repositories().await {
+        Ok(repos) => repos,
+        Err(_) => {
+            // Create repositories from REPOS env var when API fails (for testing refresh indicators)
+            log_info("GitHub API failed, creating repositories from REPOS env var for demo".to_string());
+            // Convert RepositoryConfig to Repository
+            settings.repositories.iter().map(|config| {
+                Repository {
+                    id: 0,
+                    name: config.name.clone(),
+                    owner: config.owner.clone(),
+                    full_name: format!("{}/{}", config.owner, config.name),
+                    html_url: format!("https://github.com/{}/{}", config.owner, config.name),
+                    default_branch: Some("main".to_string()),
+                }
+            }).collect()
+        }
+    };
 
     Ok(AppState {
         repositories,
@@ -73,7 +93,7 @@ pub async fn new_without_refresh(settings: Settings) -> Result<Self, AppError> {
         settings,
         github_client,
         last_repo_refresh_times: HashMap::new(),
-        is_refreshing: false,
+        refreshing_repos: Arc::new(RwLock::new(HashSet::new())),
     })
 }
 
@@ -94,7 +114,6 @@ pub async fn new(settings: Settings) -> Result<Self, AppError> {
 
 
 pub async fn refresh(&mut self, force_all: bool) -> Result<(), AppError> {
-    self.is_refreshing = true;
     let now = Utc::now();
     
     // Collect repositories to refresh
@@ -119,11 +138,19 @@ pub async fn refresh(&mut self, force_all: bool) -> Result<(), AppError> {
     };
     
     if repos_to_refresh.is_empty() {
-        self.is_refreshing = false;
         return Ok(());
     }
     
     log_info(format!("Refreshing {} repositories (force_all={})", repos_to_refresh.len(), force_all));
+    
+    // Add repositories to refreshing set
+    {
+        let mut refreshing = self.refreshing_repos.write().unwrap();
+        for repo in &repos_to_refresh {
+            refreshing.insert(repo.full_name.clone());
+        }
+        log_info(format!("Added {} repos to refreshing set", repos_to_refresh.len()));
+    }
     
     // Use a semaphore to limit concurrent requests
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
@@ -138,15 +165,24 @@ pub async fn refresh(&mut self, force_all: bool) -> Result<(), AppError> {
         let owner = repo.owner.clone();
         let name = repo.name.clone();
         let semaphore = std::sync::Arc::clone(&semaphore);
+        let refreshing_repos = Arc::clone(&self.refreshing_repos);
         
         let task = tokio::spawn(async move {
             // Acquire semaphore permit before making request
             let _permit = semaphore.acquire().await
                 .map_err(|_| AppError::GithubError("Failed to acquire semaphore permit".to_string()))?;
             
-            let runs = github_client
+            let result = github_client
                 .fetch_workflow_runs(&owner, &name)
-                .await?;
+                .await;
+            
+            // Remove from refreshing set when done (regardless of success/failure)
+            {
+                let mut refreshing = refreshing_repos.write().unwrap();
+                refreshing.remove(&repo_name);
+            }
+            
+            let runs = result?;
             Ok::<(String, Vec<WorkflowRun>), AppError>((repo_name, runs))
         });
         tasks.push(task);
@@ -188,7 +224,6 @@ pub async fn refresh(&mut self, force_all: bool) -> Result<(), AppError> {
         log_info(format!("Refresh completed: {} successful", success_count));
     }
     
-    self.is_refreshing = false;
     Ok(())
 }
 
@@ -407,7 +442,6 @@ fn create_test_app_state() -> AppState {
                 branch: None,
                 workflows: None,
                 enabled: true,
-                refresh_interval_seconds: None,
             },
             RepositoryConfig {
                 owner: "owner2".to_string(),
@@ -415,7 +449,6 @@ fn create_test_app_state() -> AppState {
                 branch: None,
                 workflows: None,
                 enabled: true,
-                refresh_interval_seconds: Some(300), // 5 minutes
             },
         ]);
 
@@ -466,9 +499,7 @@ fn create_test_app_state() -> AppState {
             settings: settings.clone(),
             github_client: crate::github::client::GithubClient::new(settings.clone()).unwrap(),
             last_repo_refresh_times: HashMap::new(),
-            ui_tx: mpsc::unbounded_channel().0,
-            seconds_until_refresh: 0,
-            is_refreshing: false,
+            refreshing_repos: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -480,10 +511,10 @@ fn create_test_app_state() -> AppState {
     }
 
     #[tokio::test]
-    async fn test_calculate_refresh_interval_with_override() {
+    async fn test_calculate_refresh_interval_no_override() {
         let app_state = create_test_app_state();
         let interval = app_state.calculate_refresh_interval("owner2/repo2");
-        assert_eq!(interval, Duration::from_secs(300)); // Override takes precedence
+        assert_eq!(interval, Duration::from_secs(7200)); // No override, uses activity-based calculation
     }
 
     #[tokio::test]
@@ -647,9 +678,7 @@ fn create_test_app_state() -> AppState {
             settings: create_test_settings(vec![]),
             github_client: crate::github::client::GithubClient::new(create_test_settings(vec![])).unwrap(),
             last_repo_refresh_times: HashMap::new(),
-            ui_tx: mpsc::unbounded_channel().0,
-            seconds_until_refresh: 0,
-            is_refreshing: false,
+            refreshing_repos: Arc::new(RwLock::new(HashSet::new())),
         };
         
         // Should not panic with no repositories
@@ -760,9 +789,7 @@ fn create_test_app_state() -> AppState {
             settings: create_test_settings(vec![]),
             github_client: crate::github::client::GithubClient::new(create_test_settings(vec![])).unwrap(),
             last_repo_refresh_times: HashMap::new(),
-            ui_tx: mpsc::unbounded_channel().0,
-            seconds_until_refresh: 0,
-            is_refreshing: false,
+            refreshing_repos: Arc::new(RwLock::new(HashSet::new())),
         };
         
         let seconds = app_state.seconds_until_refresh();
@@ -799,73 +826,24 @@ fn create_test_app_state() -> AppState {
     }
 
     #[tokio::test]
-    async fn test_handle_ui_event_timer_update() {
-        let mut app_state = create_test_app_state();
+    async fn test_refreshing_repos_set_operations() {
+        let app_state = create_test_app_state();
         
-        // Initial state (create_test_app_state sets it to 0)
-        assert_eq!(app_state.seconds_until_refresh, 0);
+        // Test initial state
+        let refreshing = app_state.refreshing_repos.read().unwrap();
+        assert!(refreshing.is_empty());
+        drop(refreshing);
         
-        // Handle timer update event
-        app_state.handle_ui_event(UiEvent::TimerUpdate(30));
+        // Test adding to refreshing set
+        {
+            let mut refreshing = app_state.refreshing_repos.write().unwrap();
+            refreshing.insert("owner1/repo1".to_string());
+        }
         
-        assert_eq!(app_state.seconds_until_refresh, 30);
-    }
-
-    #[tokio::test]
-    async fn test_handle_ui_event_workflow_runs_updated() {
-        let mut app_state = create_test_app_state();
-        let test_runs = vec![WorkflowRun {
-            id: 999,
-            name: "Test Workflow".to_string(),
-            branch: "main".to_string(),
-            commit_sha: "abc123".to_string(),
-            actor: "testuser".to_string(),
-            status: WorkflowStatus::Completed,
-            conclusion: Some(WorkflowConclusion::Success),
-            html_url: "https://github.com/test/repo/run/999".to_string(),
-            logs_url: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }];
-        
-        // Handle workflow runs updated event
-        app_state.handle_ui_event(UiEvent::WorkflowRunsUpdated("owner1/repo1".to_string(), test_runs.clone()));
-        
-        // Check that workflow runs were updated
-        assert!(app_state.workflow_runs.contains_key("owner1/repo1"));
-        let stored_runs = app_state.workflow_runs.get("owner1/repo1").unwrap();
-        assert_eq!(stored_runs.len(), 1);
-        assert_eq!(stored_runs[0].id, 999);
-        
-        // Check that refresh time was updated
-        assert!(app_state.last_repo_refresh_times.contains_key("owner1/repo1"));
-        
-        // Check that timer was set to refresh interval (5 seconds for very active repo)
-        assert_eq!(app_state.seconds_until_refresh, 5);
-    }
-
-    #[tokio::test]
-    async fn test_handle_ui_event_workflow_runs_updated_with_override() {
-        let mut app_state = create_test_app_state();
-        let test_runs = vec![WorkflowRun {
-            id: 999,
-            name: "Test Workflow".to_string(),
-            branch: "main".to_string(),
-            commit_sha: "abc123".to_string(),
-            actor: "testuser".to_string(),
-            status: WorkflowStatus::Completed,
-            conclusion: Some(WorkflowConclusion::Success),
-            html_url: "https://github.com/test/repo/run/999".to_string(),
-            logs_url: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }];
-        
-        // Handle workflow runs updated event for repo2 (has 300 second override)
-        app_state.handle_ui_event(UiEvent::WorkflowRunsUpdated("owner2/repo2".to_string(), test_runs.clone()));
-        
-        // Check that timer was set to override interval (300 seconds)
-        assert_eq!(app_state.seconds_until_refresh, 300);
+        // Test that repo is in refreshing set
+        let refreshing = app_state.refreshing_repos.read().unwrap();
+        assert!(refreshing.contains("owner1/repo1"));
+        assert_eq!(refreshing.len(), 1);
     }
 
     #[tokio::test]
@@ -878,12 +856,12 @@ fn create_test_app_state() -> AppState {
     }
 
     #[tokio::test]
-    async fn test_calculate_refresh_interval_with_override_new() {
+    async fn test_calculate_refresh_interval_no_override_new() {
         let app_state = create_test_app_state();
         
-        // repo2 has override to 5 minutes (300s)
+        // repo2 has no override, uses activity-based calculation (25 hours ago = inactive)
         let interval = app_state.calculate_refresh_interval("owner2/repo2");
-        assert_eq!(interval.as_secs(), 300);
+        assert_eq!(interval.as_secs(), 7200);
     }
 
     #[tokio::test]

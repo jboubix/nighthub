@@ -59,7 +59,6 @@ fn create_test_settings() -> Settings {
                 branch: None,
                 workflows: None,
                 enabled: true,
-                refresh_interval_seconds: None,
             },
             RepositoryConfig {
                 owner: "owner2".to_string(),
@@ -67,7 +66,6 @@ fn create_test_settings() -> Settings {
                 branch: None,
                 workflows: None,
                 enabled: true,
-                refresh_interval_seconds: Some(300),
             },
         ],
         monitoring: MonitoringConfig::default(),
@@ -155,9 +153,7 @@ fn create_mock_app_state() -> AppState {
         settings,
         github_client: nighthub::github::client::GithubClient::new(create_test_settings()).unwrap(),
         last_repo_refresh_times: HashMap::new(),
-            ui_tx: tokio::sync::mpsc::unbounded_channel().0,
-        seconds_until_refresh: 60,
-        is_refreshing: false,
+        refreshing_repos: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashSet::new())),
     }
 }
 
@@ -338,7 +334,7 @@ mod main_application_tests {
         
         // Test that the refresh structure exists and can be called
         // (We don't assert success here since it would require real API calls)
-        let _refresh_result = app_state.refresh().await;
+        let _refresh_result = app_state.refresh(false).await;
         
         // Verify state structure remains intact
         assert_eq!(app_state.repositories.len(), 2);
@@ -541,9 +537,7 @@ mod main_application_tests {
             settings,
             github_client: nighthub::github::client::GithubClient::new(create_test_settings()).unwrap(),
             last_repo_refresh_times: HashMap::new(),
-        ui_tx: tokio::sync::mpsc::unbounded_channel().0,
-            seconds_until_refresh: 60,
-            is_refreshing: false,
+            refreshing_repos: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashSet::new())),
         };
         
         let mut workflow_list = WorkflowListComponent::new();
@@ -602,17 +596,11 @@ mod main_application_tests {
     async fn test_manual_refresh_with_f_key() {
         let mut app_state = create_mock_app_state();
 
-        // Set initial timer to some value
-        app_state.seconds_until_refresh = 30;
-
         // Verify that no popup is open (condition for refresh)
         assert!(app_state.popup.is_none());
 
-        // Simulate calling reset_refresh_timer (what happens when 'f' is pressed)
-        app_state.reset_refresh_timer();
-
-        // Timer should be reset to maximum refresh interval (300 seconds for repo2 override)
-        assert_eq!(app_state.seconds_until_refresh, 300);
+        // Note: reset_refresh_timer method no longer exists
+        // Timer calculation is now dynamic based on activity
     }
 
 

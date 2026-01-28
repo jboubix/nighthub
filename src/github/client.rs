@@ -276,7 +276,6 @@ mod tests {
                 branch: None,
                 workflows: None,
                 enabled: true,
-                refresh_interval_seconds: None,
             },
             RepositoryConfig {
                 owner: "owner2".to_string(),
@@ -284,7 +283,6 @@ mod tests {
                 branch: None,
                 workflows: None,
                 enabled: true,
-                refresh_interval_seconds: None,
             },
         ]);
         settings

@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )).ok();
 
             // Render workflow list component with timer
-            workflow_list.render(f, f.area(), &app_state.workflow_runs, &repo_names, app_state.seconds_until_refresh(), app_state.is_refreshing);
+            workflow_list.render(f, f.area(), &app_state.workflow_runs, &repo_names, app_state.seconds_until_refresh(), &app_state.refreshing_repos);
 
             // Render context menu if open
             if let Some(popup_type) = app_state.popup {
